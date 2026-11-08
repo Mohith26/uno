@@ -3,6 +3,8 @@ using System.IO;
 using System.Threading.Tasks;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml.Documents.TextFormatting;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Uno.UI.Composition.Drawing;
 using Uno.UI.Composition.Managed;
@@ -19,6 +21,7 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Documents
 	public class Given_FontDetailsCache
 	{
 		private const string FontAsset = "ms-appx:///Uno.UI.RuntimeTests/Assets/Fonts/uno-fluentui-assets-runtimetest01.ttf";
+		private const string LatinFontAsset = "ms-appx:///Uno.UI.RuntimeTests/Assets/Fonts/Roboto-Regular.ttf";
 
 		[TestMethod]
 		public async Task When_Uri_Font_Loaded_Then_Bytes_Not_Staged_In_Managed_Memory()
@@ -108,6 +111,38 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Documents
 			Assert.IsNull(await disabled.MatchCharacterAsync(Ideograph, FontWeights.Normal, FontStretch.Normal, FontStyle.Normal, 14f));
 		}
 
+		[TestMethod]
+		[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+		public async Task When_Local_Font_Not_Loaded_Then_First_Measure_Uses_It()
+		{
+			var path = await CopyFontToTempFile(LatinFontAsset);
+			try
+			{
+				var source = new Uri(path).AbsoluteUri;
+				var sut = new TextBlock { Text = "Measured before the first frame", FontSize = 17, FontFamily = new FontFamily(source) };
+
+				sut.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+				var firstWidth = sut.DesiredSize.Width;
+
+				var (details, loadedTask) = FontDetailsCache.GetFont(source, 17f, FontWeights.Normal, FontStretch.Normal, FontStyle.Normal);
+				var loadedDuringRequest = loadedTask.IsCompletedSuccessfully;
+
+				// A load still running keeps the file open, which would fail the delete below and hide these asserts.
+				await loadedTask;
+
+				Assert.IsTrue(loadedDuringRequest, "A local font should load during the first request.");
+				Assert.AreEqual("Roboto", details.FontHandle.FamilyName);
+
+				sut.InvalidateMeasure();
+				sut.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+				Assert.AreEqual(firstWidth, sut.DesiredSize.Width);
+			}
+			finally
+			{
+				File.Delete(path);
+			}
+		}
+
 		private static async Task<IFont> LoadAssetFont()
 		{
 			var file = await StorageFile.GetFileFromApplicationUriAsync(new Uri(FontAsset));
@@ -119,10 +154,10 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Documents
 		private static async Task<FontDetails> LoadFont(string path)
 			=> await FontDetailsCache.GetFont(new Uri(path).AbsoluteUri, 14f, FontWeights.Normal, FontStretch.Normal, FontStyle.Normal).loadedTask;
 
-		private static async Task<string> CopyFontToTempFile()
+		private static async Task<string> CopyFontToTempFile(string asset = FontAsset)
 		{
 			var path = Path.Combine(Path.GetTempPath(), $"uno-font-{Guid.NewGuid():N}.ttf");
-			var file = await StorageFile.GetFileFromApplicationUriAsync(new Uri(FontAsset));
+			var file = await StorageFile.GetFileFromApplicationUriAsync(new Uri(asset));
 			using var source = await file.OpenStreamForReadAsync();
 			using var target = File.Create(path);
 			await source.CopyToAsync(target);
